@@ -1,5 +1,5 @@
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
@@ -7,7 +7,8 @@ import os
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import logging
-from time import sleep
+import asyncio
+import time
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -49,10 +50,11 @@ def get_db():
 
 # Funções de negócio
 def extrair_dados():
-    url = "https://api.coinbase.com/v2/prices/spot"
+    url = "https://api.coinbase.com/v2/prices/BTC-USD/spot"  # URL mais específica
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
+        logger.info(f"Dados recebidos: {response.json()}")
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Erro ao acessar API Coinbase: {str(e)}")
@@ -68,7 +70,7 @@ def tratar_dados_cripto(dados_json):
             valor=valor,
             cripto=cripto,
             moeda=moeda,
-            timestamp=datetime.now()
+            timestamp=datetime.utcnow()  # Usando UTC para consistência
         )
     except (KeyError, ValueError) as e:
         logger.error(f"Erro ao processar dados: {str(e)}")
@@ -78,19 +80,33 @@ def salvar_dados_sqlalchemy(dados, db):
     try:
         db.add(dados)
         db.commit()
-        logger.info("Dados inseridos com sucesso!")
+        logger.info(f"Dados inseridos: {dados.cripto} {dados.valor} {dados.moeda}")
     except Exception as e:
         db.rollback()
         logger.error(f"Erro ao salvar dados: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro ao salvar no banco de dados")
 
+# Tarefa de background para coleta periódica
+async def coletar_dados_task():
+    while True:
+        try:
+            with SessionLocal() as db:
+                dados_json = extrair_dados()
+                dados_tratados = tratar_dados_cripto(dados_json)
+                salvar_dados_sqlalchemy(dados_tratados, db)
+        except Exception as e:
+            logger.error(f"Erro no coletor: {str(e)}")
+        
+        await asyncio.sleep(60)  # Espera 1 minuto
+
 # Configuração do FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inicializa o banco de dados quando o app inicia
     init_db()
+    # Inicia a tarefa de background apenas na Vercel
+    if os.getenv('VERCEL') == '1':
+        asyncio.create_task(coletar_dados_task())
     yield
-    # Limpeza quando o app encerra
     engine.dispose()
 
 app = FastAPI(lifespan=lifespan)
@@ -100,31 +116,30 @@ app = FastAPI(lifespan=lifespan)
 async def root():
     return {"message": "API de Monitoramento de Criptomoedas"}
 
-@app.post("/salvar")
-async def salvar():
-    db = SessionLocal()
-    try:
-        dados_json = extrair_dados()
-        dados_tratados = tratar_dados_cripto(dados_json)
-        salvar_dados_sqlalchemy(dados_tratados, db)
-        return {"status": "success", "message": "Dados salvos com sucesso!"}
-    finally:
-        db.close()
+@app.get("/healthcheck")
+async def healthcheck():
+    return {"status": "healthy"}
 
-# Função original (mantida para compatibilidade)
+@app.post("/trigger-collect")
+async def trigger_collect(background_tasks: BackgroundTasks):
+    background_tasks.add_task(
+        lambda: asyncio.create_task(coletar_dados_task())
+    )
+    return {"message": "Coleta iniciada em background"}
+
+# Função mantida para compatibilidade com execução local
 def main():
     init_db()
     while True:
         try:
-            dados_json = extrair_dados()
-            dados_tratados = tratar_dados_cripto(dados_json)
             with SessionLocal() as db:
+                dados_json = extrair_dados()
+                dados_tratados = tratar_dados_cripto(dados_json)
                 salvar_dados_sqlalchemy(dados_tratados, db)
         except Exception as e:
             logger.error(f"Erro no pipeline: {str(e)}")
         
-        sleep(60)  # Espera 1 minuto
+        time.sleep(60)
 
 if __name__ == "__main__":
-    # Para execução local mantendo a funcionalidade original
     main()

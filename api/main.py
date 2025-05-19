@@ -100,6 +100,15 @@ def tratar_dados_cripto(dados_json):
 
 def salvar_dados_sqlalchemy(dados, db):
     try:
+         # 1. Converte o timestamp para UTC-3 (America/Sao_Paulo) ANTES de salvar
+        if dados.timestamp.tzinfo is not None:  # Se já tiver timezone
+            dados.timestamp = dados.timestamp.astimezone(pytz.timezone('America/Sao_Paulo'))
+        else:  # Se não tiver timezone (local)
+            dados.timestamp = pytz.timezone('America/Sao_Paulo').localize(dados.timestamp)
+        
+        # 2. Remove o timezone para evitar conversões automáticas pelo PostgreSQL
+        dados.timestamp = dados.timestamp.replace(tzinfo=None)
+        # 3. Salva no banco de dados
         db.add(dados)
         db.commit()
         db.refresh(dados)

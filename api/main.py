@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
+import pytz  # Biblioteca para timezones
 import os
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -48,7 +49,7 @@ class CryptoPrice(Base):
     valor = Column(Float, nullable=False)
     cripto = Column(String(10), nullable=False)
     moeda = Column(String(10), nullable=False)
-    timestamp = Column(DateTime(timezone=False), nullable=False)
+    timestamp = Column(DateTime(timezone=True), nullable=False)  # Ative timezone
 
     def __repr__(self):
         return f"<CryptoPrice {self.cripto}={self.valor} {self.moeda} {self.timestamp}>"
@@ -80,13 +81,15 @@ def extrair_dados():
 
 def tratar_dados_cripto(dados_json):
     try:
-        dt = datetime.now()    
-        dt_naive = dt.replace(tzinfo=None)
+         # Captura o horário atual com timezone UTC
+        dt_utc = datetime.now(pytz.utc)
+        # Converte para São Paulo (UTC-3)
+        dt_sp = dt_utc.astimezone(pytz.timezone('America/Sao_Paulo'))
         return CryptoPrice(
             valor=float(dados_json['data']['amount']),
             cripto=dados_json['data']['base'],
             moeda=dados_json['data']['currency'],
-            timestamp=dt_naive
+            timestamp=dt_sp  # Já com timezone
         )
     except (KeyError, ValueError) as e:
         logger.error(f"Erro ao processar dados: {str(e)} - Dados: {dados_json}")
